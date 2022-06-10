@@ -1,0 +1,4 @@
+[profile.ci]
+junit = { path = "junit_cargo-test.xml" }
+fail-fast = false
+failure-output = "immediate-final"
