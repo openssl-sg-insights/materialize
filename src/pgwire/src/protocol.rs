@@ -47,6 +47,7 @@ use crate::codec::FramedConn;
 use crate::message::{
     self, BackendMessage, ErrorResponse, FrontendMessage, Severity, VERSIONS, VERSION_3,
 };
+use crate::metrics::Metrics;
 use crate::server::{Conn, TlsMode};
 
 /// Reports whether the given stream begins with a pgwire handshake.
@@ -81,6 +82,8 @@ pub struct RunParams<'a, A> {
     pub version: i32,
     /// The parameters that the client provided in the startup message.
     pub params: HashMap<String, String>,
+    /// The server's metrics.
+    pub metrics: Metrics,
     /// Frontegg authentication.
     pub frontegg: Option<&'a FronteggAuthentication>,
     /// Whether this is an internal server that permits access to restricted
@@ -105,6 +108,7 @@ pub async fn run<'a, A>(
         conn,
         version,
         mut params,
+        metrics,
         frontegg,
         internal,
     }: RunParams<'a, A>,
@@ -266,6 +270,7 @@ where
     let machine = StateMachine {
         conn,
         adapter_client: &mut adapter_client,
+        metrics: &metrics,
     };
 
     select! {
@@ -289,6 +294,7 @@ enum State {
 struct StateMachine<'a, A> {
     conn: &'a mut FramedConn<A>,
     adapter_client: &'a mut mz_adapter::SessionClient,
+    metrics: &'a Metrics,
 }
 
 impl<'a, A> StateMachine<'a, A>
@@ -403,6 +409,12 @@ where
             None => State::Done,
         };
 
+        let status = match next_state {
+            State::Ready | State::Done => "success",
+            State::Drain => "error",
+        };
+        self.metrics.message_status(status).inc();
+
         Ok(next_state)
     }
 
@@ -457,6 +469,7 @@ where
 
         let result = match self.adapter_client.execute(EMPTY_PORTAL.to_string()).await {
             Ok(response) => {
+                self.metrics.query_status("success").inc();
                 self.send_pending_notices().await?;
                 self.send_execute_response(
                     response,
@@ -470,6 +483,7 @@ where
                 .await
             }
             Err(e) => {
+                self.metrics.query_status("error").inc();
                 self.send_pending_notices().await?;
                 self.error(ErrorResponse::from_adapter_error(Severity::Error, e))
                     .await
@@ -807,6 +821,7 @@ where
 
                     match self.adapter_client.execute(portal_name.clone()).await {
                         Ok(response) => {
+                            self.metrics.query_status("success").inc();
                             self.send_pending_notices().await?;
                             self.send_execute_response(
                                 response,
@@ -820,6 +835,7 @@ where
                             .await
                         }
                         Err(e) => {
+                            self.metrics.query_status("error").inc();
                             self.send_pending_notices().await?;
                             self.error(ErrorResponse::from_adapter_error(Severity::Error, e))
                                 .await
